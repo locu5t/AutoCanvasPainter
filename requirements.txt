@@ -1,0 +1,10 @@
+# Core application dependencies
+pygame
+opencv-contrib-python
+scikit-image
+scikit-learn
+numpy
+
+# Build-time dependencies
+pybind11
+cmake
