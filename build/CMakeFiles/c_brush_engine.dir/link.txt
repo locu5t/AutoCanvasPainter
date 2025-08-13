@@ -1,0 +1,1 @@
+/usr/bin/c++ -fPIC -flto -Wl,--dependency-file=CMakeFiles/c_brush_engine.dir/link.d -shared  -o c_brush_engine.cpython-312-x86_64-linux-gnu.so CMakeFiles/c_brush_engine.dir/brush_engine.cpp.o CMakeFiles/c_brush_engine.dir/bindings.cpp.o

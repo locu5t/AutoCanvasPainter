@@ -23,6 +23,7 @@ from math import comb as math_comb
 import datetime
 import random
 from sklearn.cluster import KMeans
+import c_brush_engine
 
 # ----------------------------
 # Tkinter UI for user options
@@ -244,6 +245,25 @@ def identify_painting_style(image):
 
 
 # ----------------------------
+# Brush Texture Generation
+# ----------------------------
+def create_brush_texture(size):
+    """Creates a soft, circular brush texture as a NumPy array."""
+    center = size / 2.0
+    x, y = np.mgrid[0:size, 0:size]
+    distance = np.sqrt((x - center)**2 + (y - center)**2)
+    # Create a soft falloff
+    brush = 1 - np.clip(distance / center, 0, 1)
+    # Apply a power to control the softness
+    brush = np.power(brush, 2)
+    return (brush * 255).astype(np.uint8)
+
+# Global brush texture
+BRUSH_TEXTURE_SIZE = 64
+BRUSH_TEXTURE = create_brush_texture(BRUSH_TEXTURE_SIZE)
+
+
+# ----------------------------
 # Our dryness-based stroke generator
 # ----------------------------
 def generate_stroke_dryness(
@@ -322,88 +342,46 @@ def bezier_curve(points, num_steps):
 
 
 def generate_stroke(surface, start_pos, end_pos, color, stroke_size, transparency, brush_texture):
-    """Generate a stylized stroke on the given surface based on brush texture."""
-    # Define control points for the Bézier curve with limited randomness
+    """
+    Generate a stylized stroke on the given surface using the C++ brush engine.
+    """
+    # 1. Generate the curve points
     control_points = [start_pos]
-    
-    brush_texture_lower = brush_texture.lower()
     mid_point = ((start_pos[0] + end_pos[0]) / 2, (start_pos[1] + end_pos[1]) / 2)
-    
-    if brush_texture_lower == 'oil':
-        mid_point = (
-            mid_point[0] + random.uniform(-5, 5),
-            mid_point[1] + random.uniform(-5, 5)
-        )
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'watercolor':
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'pastel':
-        mid_point = (
-            mid_point[0] + random.uniform(-3, 3),
-            mid_point[1] + random.uniform(-3, 3)
-        )
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'ink':
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'charcoal':
-        mid_point = (
-            mid_point[0] + random.uniform(-4, 4),
-            mid_point[1] + random.uniform(-4, 4)
-        )
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'acrylic':
-        mid_point = (
-            mid_point[0] + random.uniform(-2, 2),
-            mid_point[1] + random.uniform(-2, 2)
-        )
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'sponge':
-        mid_point = (
-            mid_point[0] + random.uniform(-6, 6),
-            mid_point[1] + random.uniform(-6, 6)
-        )
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'dry brush':
-        mid_point = (
-            mid_point[0] + random.uniform(-2, 2),
-            mid_point[1] + random.uniform(-2, 2)
-        )
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'airbrush':
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'palette knife':
-        mid_point = (
-            mid_point[0] + random.uniform(-7, 7),
-            mid_point[1] + random.uniform(-7, 7)
-        )
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'pointillism':
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'fine line':
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'thick line':
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'soft round':
-        control_points.append(mid_point)
-    elif brush_texture_lower == 'hard round':
-        control_points.append(mid_point)
-    else:
-        control_points.append(mid_point)
+    mid_point = (
+        mid_point[0] + random.uniform(-stroke_size * 0.5, stroke_size * 0.5),
+        mid_point[1] + random.uniform(-stroke_size * 0.5, stroke_size * 0.5)
+    )
+    control_points.append(mid_point)
     control_points.append(end_pos)
+    curve_points = bezier_curve(control_points, num_steps=max(10, stroke_size))
+    path = [c_brush_engine.Point(int(p[0]), int(p[1])) for p in curve_points]
 
-    if brush_texture_lower == 'pointillism':
-        curve_points = [start_pos]
-    else:
-        curve_points = bezier_curve(control_points, num_steps=15)
+    # 2. Get the canvas as a numpy array
+    canvas_view = pygame.surfarray.pixels3d(surface)
 
-    # Create a simple brush surface for demonstration
-    brush_surface = pygame.Surface((stroke_size * 2, stroke_size * 2), pygame.SRCALPHA)
-    pygame.draw.circle(brush_surface, (*color, transparency), (stroke_size, stroke_size), stroke_size)
+    # Pygame's surfarray has a different memory layout than standard numpy arrays (F-contiguous).
+    # Our C++ code expects a C-contiguous array (row-major).
+    # We must create a C-contiguous copy to ensure correctness.
+    canvas_array = np.ascontiguousarray(np.transpose(canvas_view, (1, 0, 2)))
 
-    for point in curve_points:
-        x = int(point[0] - stroke_size)
-        y = int(point[1] - stroke_size)
-        surface.blit(brush_surface, (x, y))
+    # 3. Prepare arguments
+    rgb_color = tuple(color[:3])
+    opacity = transparency / 255.0
+
+    # 4. Call the C++ function
+    c_brush_engine.render_stroke(
+        canvas=canvas_array,
+        path=path,
+        brush_texture=BRUSH_TEXTURE,
+        color=rgb_color,
+        stroke_size=stroke_size,
+        opacity=opacity
+    )
+
+    # 5. Update the surface with the modified array
+    modified_view = np.transpose(canvas_array, (1, 0, 2))
+    pygame.surfarray.blit_array(surface, modified_view)
 
 
 # ----------------------------
@@ -495,7 +473,7 @@ def run_painting_simulation(image_path, painting_style, brush_texture, reconstru
         chunks = [pixels[i:i+chunk_size] for i in range(0, total_px, chunk_size)]
 
         for chunk in chunks:
-            if not running: 
+            if not running:
                 break
             for event in pygame.event.get():
                 if event.type == QUIT:
@@ -542,7 +520,7 @@ def run_painting_simulation(image_path, painting_style, brush_texture, reconstru
         order = sorted(range(num_clusters), key=lambda c: cluster_brightness(cluster_centers[c]))
 
         for i, cluster_label in enumerate(order):
-            if not running: 
+            if not running:
                 break
             positions = clusters[cluster_label]
             chunk_size = 5000
@@ -644,7 +622,7 @@ def run_painting_simulation(image_path, painting_style, brush_texture, reconstru
             chunk_counter = 0
 
             for color_, seglist in sorted_tones:
-                if not running: 
+                if not running:
                     break
                 for (sid, mask_) in seglist:
                     if not running:
@@ -731,8 +709,8 @@ def run_painting_simulation(image_path, painting_style, brush_texture, reconstru
             print(f"Detailed pass iteration {iteration + 1}/{detailed_iterations}")
 
             # Dynamic brush size and opacity based on iteration
-            brush_size = max(1, 2 - iteration)  
-            opacity = max(50, 100 - iteration * 20)  
+            brush_size = max(1, 2 - iteration)
+            opacity = max(50, 100 - iteration * 20)
             chunk_size = 300  # Finer control with smaller chunk size
 
             for color, seglist in sorted_tones:
